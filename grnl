@@ -1,0 +1,155 @@
+#!/bin/bash
+#
+# a command line tool to manage a git based journal
+#
+
+script_name=$(basename $(readlink -f $0))
+
+# Load config file
+[[ -f ~/.grnlrc ]] && source ~/.grnlrc
+
+# Set default values
+[[ -z $journal_repository ]] && journal_repository=~/.grnl
+
+# Git command
+git="git --git-dir=${journal_repository}/.git --work-tree=${journal_repository} "
+
+usage () {
+	cat <<-EOF
+
+	Usage: $script_name [action] [arguments]
+
+	Actions:
+	    - change-date   : change the date of a specified entry
+	    - edit          : edit a specified entry
+	    - new (default) : create a new entry
+	    - help          : get help on a specific action
+	    - read          : read your journal
+
+	'$script_name help <action>' to get help on a specific action
+
+EOF
+}
+
+ask () {
+	question=$1
+	echo "$question (y/n)"
+	read answer
+	[[ $answer == y ]] && return 0
+	echo "..."
+	return 1
+}
+
+check () {
+	if ! which git &>/dev/null; then
+		echo "Git is not installed, but is required for $script_name to work."
+		echo "Please install git and retry."
+		exit 1
+	fi
+
+	if [[ ! -d $journal_repository || ! -d $journal_repository/.git ]]
+	then
+		if ask "Would you like to initialize an empty journal in $journal_repository"
+		then
+			mkdir -p $journal_repository
+			git init $journal_repository
+
+			# TODO: Configure git's user.name and user.email, if not set globally
+
+			touch $journal_repository/.empty
+			$git add $journal_repository/.empty
+			$git commit -m "Journal creation" --allow-empty
+		else
+			echo "Please edit ~/.grnl to specify where the journal should be stored"
+		fi
+	fi
+}
+
+jrnl_new () {
+	$git commit --allow-empty "$*"
+}
+
+jrnl_amend () {
+	$git commit --amend --allow-empty
+}
+
+jrnl_edit () {
+	dummy edit "$@"
+}
+
+jrnl_help () {
+	dummy help "$@"
+}
+
+jrnl_change_date () {
+    local sha=$1
+    local date=$2
+	pushd $journal_repository
+    $git filter-branch -f --env-filter \
+        'if [ $GIT_COMMIT = '$sha' ]
+         then
+            export GIT_AUTHOR_DATE="'"$date"'"
+            export GIT_COMMITTER_DATE="'"$date"'"
+        fi'
+    popd
+}
+
+
+jrnl_list () {
+	$git log --graph \
+			--pretty=format:'%Cblue%h%Creset - %s %Cgreen[%cr]%Creset%C(yellow)%d%Creset' \
+			--abbrev-commit --date=relative
+
+	echo
+	echo "Type '$script_name read <id>' in order to read a specific entry."
+}
+
+jrnl_read () {
+	local sha=$1
+	local number=$2
+
+	if [[ -z $sha ]]; then
+		if ! which tig &>/dev/null; then
+			echo "The 'tig' utility is not available on this system. Falling back on '$script_name list'"
+			echo
+			jrnl_list
+		else
+			GIT_DIR=$journal_repository/.git tig
+		fi
+	else
+		$git log --graph --pretty=medium $sha -n 1
+	fi
+
+}
+
+jrnl_repo () {
+	echo "cd $journal_repository"
+}
+
+dummy () {
+	echo "Dummy method called in place of '$*'"
+}
+
+action=$1
+shift
+
+# Default action
+[[ -z $action ]] && action=list
+
+check
+
+case $action in
+	new)	jrnl_new "$@";;
+	edit)	jrnl_edit "$@";;
+	help)	jrnl_help "$@";;
+	change-date) jrnl_change_date "$@";;
+	read)	jrnl_read "$@";;
+	list) jrnl_list "$@";;
+	amend) jrnl_amend "$@";;
+	repo) jrnl_repo "$@";;
+	*)
+		echo "Error: unknown action $action" >&2
+		usage >&2
+		exit 1
+		;;
+esac
